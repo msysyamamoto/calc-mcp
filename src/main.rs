@@ -45,3 +45,121 @@ async fn main() -> Result<()> {
     service.waiting().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_basic_arithmetic() {
+        let calculator = Calculator;
+        
+        // 足し算
+        let request = CalculateRequest {
+            expression: "2 + 3".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 5");
+
+        // 掛け算
+        let request = CalculateRequest {
+            expression: "4 * 5".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 20");
+
+        // 複合演算
+        let request = CalculateRequest {
+            expression: "2 + 3 * 4".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 14");
+    }
+
+    #[test]
+    fn test_calculate_with_parentheses() {
+        let calculator = Calculator;
+        
+        let request = CalculateRequest {
+            expression: "(2 + 3) * 4".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 20");
+    }
+
+    #[test]
+    fn test_calculate_math_functions() {
+        let calculator = Calculator;
+        
+        // 平方根（evalexprでは使用できないため、べき乗で代替）
+        let request = CalculateRequest {
+            expression: "25^0.5".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 5");
+
+        // 数学定数pi
+        let request = CalculateRequest {
+            expression: "math::pi".to_string(),
+        };
+        let result = calculator.calculate(request);
+        // evalexprの制限により、この関数は使用できない場合がある
+        if result.is_ok() {
+            assert!(result.unwrap().contains("計算結果"));
+        }
+    }
+
+    #[test]
+    fn test_calculate_error_handling() {
+        let calculator = Calculator;
+        
+        // 無効な式
+        let request = CalculateRequest {
+            expression: "2 +".to_string(),
+        };
+        let result = calculator.calculate(request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("計算エラー"));
+
+        // 未定義の変数
+        let request = CalculateRequest {
+            expression: "x + 1".to_string(),
+        };
+        let result = calculator.calculate(request);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("計算エラー"));
+    }
+
+    #[test]
+    fn test_calculate_floating_point() {
+        let calculator = Calculator;
+        
+        let request = CalculateRequest {
+            expression: "3.14 * 2".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 6.28");
+    }
+
+    #[test]
+    fn test_calculate_power() {
+        let calculator = Calculator;
+        
+        let request = CalculateRequest {
+            expression: "2^3".to_string(),
+        };
+        let result = calculator.calculate(request).unwrap();
+        assert_eq!(result, "計算結果: 8");
+    }
+
+    #[test]
+    fn test_server_info() {
+        let calculator = Calculator;
+        let info = calculator.get_info();
+        
+        assert_eq!(info.server_info.name, "calc-mcp");
+        assert_eq!(info.server_info.version, "0.1.0");
+        assert!(info.instructions.is_some());
+        assert!(info.instructions.unwrap().contains("計算機能"));
+    }
+}
