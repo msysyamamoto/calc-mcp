@@ -132,7 +132,7 @@ async fn test_mcp_server_tools_list() -> Result<()> {
             
             let calculate_tool = &tools[0];
             assert_eq!(calculate_tool["name"], "calculate");
-            assert!(calculate_tool["description"].as_str().unwrap().contains("数式を評価"));
+            assert!(calculate_tool["description"].as_str().unwrap().contains("セキュアな数式計算"));
         }
         Err(_) => {
             panic!("タイムアウト: ツールリストレスポンスが得られませんでした");
