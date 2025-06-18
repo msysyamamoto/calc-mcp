@@ -1,15 +1,32 @@
 use anyhow::Result;
-use rmcp::{tool, ServerHandler, ServiceExt, transport::stdio, model::{InitializeResult, ServerCapabilities, ProtocolVersion, Implementation}};
+use rmcp::{
+    model::{Implementation, InitializeResult, ProtocolVersion, ServerCapabilities},
+    tool, ServerHandler,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::HashMap;
+
+use rmcp::transport::streamable_http_server::{
+    session::local::LocalSessionManager, StreamableHttpService,
+};
+
+use tracing_subscriber::{
+    layer::SubscriberExt,
+    util::SubscriberInitExt,
+    {self},
+};
+
+const BIND_ADDRESS: &str = "127.0.0.1:8000";
 
 #[derive(Clone)]
 pub struct CalculatorService;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CalculateRequest {
-    #[schemars(description = "計算する数式（例: \"2 + 3 * 4\", \"sqrt(25)\", \"sin(1.57)\"）。サポート: 四則演算(+, -, *, /)、べき乗(^)、括弧、数学関数(sqrt, abs, sin, cos, tan, ln)")]
+    #[schemars(
+        description = "計算する数式（例: \"2 + 3 * 4\", \"sqrt(25)\", \"sin(1.57)\"）。サポート: 四則演算(+, -, *, /)、べき乗(^)、括弧、数学関数(sqrt, abs, sin, cos, tan, ln)"
+    )]
     pub expression: String,
 }
 
@@ -37,7 +54,7 @@ impl Calculator {
         allowed_functions.insert("cos".to_string(), Box::new(|x: f64| x.cos()));
         allowed_functions.insert("tan".to_string(), Box::new(|x: f64| x.tan()));
         allowed_functions.insert("ln".to_string(), Box::new(|x: f64| x.ln()));
-        
+
         Self { allowed_functions }
     }
 
@@ -98,7 +115,10 @@ impl Calculator {
         Ok(tokens)
     }
 
-    fn parse_number(&self, chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<f64, String> {
+    fn parse_number(
+        &self,
+        chars: &mut std::iter::Peekable<std::str::Chars>,
+    ) -> Result<f64, String> {
         let mut number_str = String::new();
         let mut has_dot = false;
 
@@ -117,7 +137,8 @@ impl Calculator {
             }
         }
 
-        number_str.parse::<f64>()
+        number_str
+            .parse::<f64>()
             .map_err(|_| format!("数値の解析に失敗: {}", number_str))
     }
 
@@ -141,10 +162,15 @@ impl Calculator {
             return Err("空の式です".to_string());
         }
 
-        self.evaluate_expression(tokens, 0).map(|(result, _)| result)
+        self.evaluate_expression(tokens, 0)
+            .map(|(result, _)| result)
     }
 
-    fn evaluate_expression(&self, tokens: &[Token], mut pos: usize) -> Result<(f64, usize), String> {
+    fn evaluate_expression(
+        &self,
+        tokens: &[Token],
+        mut pos: usize,
+    ) -> Result<(f64, usize), String> {
         let (mut left, new_pos) = self.evaluate_term(tokens, pos)?;
         pos = new_pos;
 
@@ -207,12 +233,12 @@ impl Calculator {
                     pos += 1;
                     let (right, new_pos) = self.evaluate_factor(tokens, pos)?;
                     left = left.powf(right);
-                    
+
                     // べき乗の結果をチェック
                     if !left.is_finite() {
                         return Err("べき乗の計算結果が無効です".to_string());
                     }
-                    
+
                     pos = new_pos;
                 }
                 _ => break,
@@ -258,16 +284,18 @@ impl Calculator {
                 if pos >= tokens.len() || !matches!(tokens[pos], Token::RightParen) {
                     return Err("関数の引数の後に右括弧が必要です".to_string());
                 }
-                
-                let function = self.allowed_functions.get(name)
+
+                let function = self
+                    .allowed_functions
+                    .get(name)
                     .ok_or_else(|| format!("未知の関数: {}", name))?;
                 let result = function(arg);
-                
+
                 // NaN や無限大のチェック
                 if !result.is_finite() {
                     return Err("計算結果が無効です（NaN または 無限大）".to_string());
                 }
-                
+
                 Ok((result, pos + 1))
             }
             _ => Err(format!("予期しないトークン: {:?}", tokens[pos])),
@@ -277,7 +305,9 @@ impl Calculator {
 
 #[tool(tool_box)]
 impl CalculatorService {
-    #[tool(description = "セキュアな数式計算を実行します。四則演算、べき乗、括弧、数学関数（平方根、絶対値、三角関数、自然対数）をサポートし、悪意のある入力から保護されています。")]
+    #[tool(
+        description = "セキュアな数式計算を実行します。四則演算、べき乗、括弧、数学関数（平方根、絶対値、三角関数、自然対数）をサポートし、悪意のある入力から保護されています。"
+    )]
     fn calculate(&self, #[tool(aggr)] request: CalculateRequest) -> Result<String, String> {
         let calculator = Calculator::new();
         match calculator.evaluate(&request.expression) {
@@ -297,16 +327,40 @@ impl ServerHandler for CalculatorService {
                 name: "calc-mcp".into(),
                 version: "0.1.0".into(),
             },
-            instructions: Some("計算機能を提供するMCPサーバです。数式を受け取って計算結果を返します。".into()),
+            instructions: Some(
+                "計算機能を提供するMCPサーバです。数式を受け取って計算結果を返します。".into(),
+            ),
         }
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let service = CalculatorService.serve(stdio()).await?;
-    service.waiting().await?;
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "debug".to_string().into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    let service = StreamableHttpService::new(
+        || CalculatorService {},
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
+
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let tcp_listener = tokio::net::TcpListener::bind(BIND_ADDRESS).await?;
+    let _ = axum::serve(tcp_listener, router)
+        .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.unwrap() })
+        .await;
+
     Ok(())
+
+    // let service = CalculatorService.serve(stdio()).await?;
+    // service.waiting().await?;
+    // Ok(())
 }
 
 #[cfg(test)]
@@ -316,7 +370,7 @@ mod tests {
     #[test]
     fn test_calculate_basic_arithmetic() {
         let calculator = CalculatorService;
-        
+
         // 足し算
         let request = CalculateRequest {
             expression: "2 + 3".to_string(),
@@ -342,7 +396,7 @@ mod tests {
     #[test]
     fn test_calculate_with_parentheses() {
         let calculator = CalculatorService;
-        
+
         let request = CalculateRequest {
             expression: "(2 + 3) * 4".to_string(),
         };
@@ -353,7 +407,7 @@ mod tests {
     #[test]
     fn test_calculate_math_functions() {
         let calculator = CalculatorService;
-        
+
         // 平方根
         let request = CalculateRequest {
             expression: "sqrt(25)".to_string(),
@@ -379,7 +433,7 @@ mod tests {
     #[test]
     fn test_calculate_error_handling() {
         let calculator = CalculatorService;
-        
+
         // 無効な式
         let request = CalculateRequest {
             expression: "2 +".to_string(),
@@ -400,7 +454,7 @@ mod tests {
     #[test]
     fn test_calculate_floating_point() {
         let calculator = CalculatorService;
-        
+
         let request = CalculateRequest {
             expression: "3.14 * 2".to_string(),
         };
@@ -411,7 +465,7 @@ mod tests {
     #[test]
     fn test_calculate_power() {
         let calculator = CalculatorService;
-        
+
         let request = CalculateRequest {
             expression: "2^3".to_string(),
         };
@@ -423,7 +477,7 @@ mod tests {
     fn test_server_info() {
         let calculator = CalculatorService;
         let info = calculator.get_info();
-        
+
         assert_eq!(info.server_info.name, "calc-mcp");
         assert_eq!(info.server_info.version, "0.1.0");
         assert!(info.instructions.is_some());
@@ -433,7 +487,7 @@ mod tests {
     #[test]
     fn test_security_input_length_limit() {
         let calculator = CalculatorService;
-        
+
         // 長すぎる入力
         let long_expression = "1+".repeat(1000);
         let request = CalculateRequest {
@@ -447,7 +501,7 @@ mod tests {
     #[test]
     fn test_security_dangerous_characters() {
         let calculator = CalculatorService;
-        
+
         // 危険な文字のテスト
         let dangerous_inputs = vec![
             "2 + 3; rm -rf /",
@@ -468,7 +522,7 @@ mod tests {
     #[test]
     fn test_security_function_whitelist() {
         let calculator = CalculatorService;
-        
+
         // 許可されていない関数
         let request = CalculateRequest {
             expression: "exec(rm)".to_string(),
@@ -482,7 +536,7 @@ mod tests {
     #[test]
     fn test_security_zero_division() {
         let calculator = CalculatorService;
-        
+
         let request = CalculateRequest {
             expression: "1 / 0".to_string(),
         };
@@ -494,7 +548,7 @@ mod tests {
     #[test]
     fn test_security_nan_infinity() {
         let calculator = CalculatorService;
-        
+
         // 無限大を生成する可能性のある計算
         let request = CalculateRequest {
             expression: "sqrt(-1)".to_string(),
