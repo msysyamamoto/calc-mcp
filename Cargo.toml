@@ -26,3 +26,4 @@ tracing-subscriber = { version = "0.3", features = [
 ] }
 
 tokio-test = "0.4"
+tokio-util = { version = "0.7", features = ["codec"] }
